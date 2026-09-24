@@ -31,7 +31,7 @@ a fallback for a room that never publishes one.
 ## Adding it
 
 ```swift
-.package(path: "../sinua/packages/ios-livekit")   // once published: .package(url: "https://github.com/sinua-dev/sinua-swift-livekit", from: "0.1.0-beta.3")
+.package(path: "../sinua/packages/ios-livekit")   // once published: .package(url: "https://github.com/sinua-dev/sinua-swift-livekit", from: "0.1.0-beta.4")
 ```
 
 It depends on `packages/ios` by path, so both must be present.
