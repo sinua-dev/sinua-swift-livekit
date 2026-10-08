@@ -45,6 +45,10 @@ public final class LiveKitVoiceSource: NSObject, VoiceSource, RoomDelegate, @unc
     private var connectionCb: ((Bool) -> Void)?
     private var sessionUp = false
     private var muted = false
+    private var transcriptWanted = false
+    private var readingTranscripts = false
+    /// LiveKit Agents' transcription text streams (docs.livekit.io/agents/multimodality/text).
+    static let transcriptionTopic = "lk.transcription"
 
     public init(room: Room) {
         self.room = room
@@ -76,6 +80,16 @@ public final class LiveKitVoiceSource: NSObject, VoiceSource, RoomDelegate, @unc
     public func onMetrics(_ cb: @escaping (VoiceMetrics) -> Void) { tracker.onMetrics = cb }
     public func onStateChange(_ cb: @escaping (SinuaVoice.AgentState) -> Void) { tracker.onState = cb }
     public func onInterrupt(_ cb: @escaping () -> Void) { tracker.onInterrupt = cb }
+    /// Both speakers' live transcript from the agent's `lk.transcription` streams (design note 39),
+    /// synced and truncated by the agent itself. Display only, nothing is kept or sent. A Room takes
+    /// one handler per topic: on an attached Room whose app already reads them, this stays empty.
+    public func onTranscript(_ cb: @escaping (TranscriptUpdate) -> Void) {
+        tracker.onTranscript = cb
+        transcriptWanted = true
+        if sessionUp { readTranscripts() }
+    }
+    public var supportsTranscript: Bool { true }
+    public var transcriptTiming: TranscriptTiming { .synced }
     public func onConnectionChange(_ cb: @escaping (Bool) -> Void) { connectionCb = cb }
     public var reportsConnection: Bool { true }
     public var supportsMute: Bool { true }
@@ -107,6 +121,7 @@ public final class LiveKitVoiceSource: NSObject, VoiceSource, RoomDelegate, @unc
                 if publishMicrophone { try await room.localParticipant.setMicrophone(enabled: !muted) }
             }
             let found = await MainActor.run { () -> Bool in
+                readTranscripts()
                 for p in room.remoteParticipants.values { seen(p) }
                 startTimer()
                 return tracker.agentIdentity != nil
@@ -247,7 +262,53 @@ public final class LiveKitVoiceSource: NSObject, VoiceSource, RoomDelegate, @unc
         }
     }
 
+    /// Main thread: registers the `lk.transcription` handler once, if transcripts are wanted.
+    private func readTranscripts() {
+        guard transcriptWanted, !readingTranscripts else { return }
+        readingTranscripts = true
+        let room = room
+        Task {
+            do {
+                try await room.registerTextStreamHandler(for: Self.transcriptionTopic) { [weak self] reader, from in
+                    let key = reader.info.attributes["lk.segment_id"] ?? reader.info.id
+                    let final = reader.info.attributes["lk.transcription_final"] == "true"
+                    var text = ""
+                    for try await chunk in reader {
+                        text += chunk
+                        let t = text
+                        await MainActor.run {
+                            self?.transcription(from: from.stringValue, key: key, text: t, final: false)
+                        }
+                    }
+                    if final {
+                        let t = text
+                        await MainActor.run {
+                            self?.transcription(from: from.stringValue, key: key, text: t, final: true)
+                        }
+                    }
+                }
+            } catch {
+                NSLog(
+                    "LiveKitVoiceSource: the Room already has an lk.transcription handler; transcripts stay off (%@)",
+                    "\(error)")
+            }
+        }
+    }
+
+    private func transcription(from identity: String, key: String, text: String, final: Bool) {
+        let local = identity == room.localParticipant.identity?.stringValue
+        let p = room.remoteParticipants.values.first { $0.identity?.stringValue == identity }
+        tracker.transcription(
+            identity: identity, isAgentKind: p?.kind == .agent, attributes: p?.attributes ?? [:], local: local,
+            key: key, text: text, final: final, now: Date().timeIntervalSinceReferenceDate * 1000)
+    }
+
     private func teardown() {
+        if readingTranscripts {
+            readingTranscripts = false
+            let room = room
+            Task { await room.unregisterTextStreamHandler(for: Self.transcriptionTopic) }
+        }
         timer?.cancel()
         timer = nil
         untap()
