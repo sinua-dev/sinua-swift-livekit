@@ -78,7 +78,11 @@ public final class LiveKitVoiceSource: NSObject, VoiceSource, RoomDelegate, @unc
     }
 
     public func onMetrics(_ cb: @escaping (VoiceMetrics) -> Void) { tracker.onMetrics = cb }
-    public func onStateChange(_ cb: @escaping (SinuaVoice.AgentState) -> Void) { tracker.onState = cb }
+    /// Mid-session, it replays the current state at once: a view mounted after `connect()` doesn't stay idle.
+    public func onStateChange(_ cb: @escaping (SinuaVoice.AgentState) -> Void) {
+        tracker.onState = cb
+        if tracker.state != .idle { cb(tracker.state) }
+    }
     public func onInterrupt(_ cb: @escaping () -> Void) { tracker.onInterrupt = cb }
     /// Both speakers' live transcript from the agent's `lk.transcription` streams (design note 39),
     /// synced and truncated by the agent itself. Display only, nothing is kept or sent. A Room takes
@@ -90,7 +94,11 @@ public final class LiveKitVoiceSource: NSObject, VoiceSource, RoomDelegate, @unc
     }
     public var supportsTranscript: Bool { true }
     public var transcriptTiming: TranscriptTiming { .synced }
-    public func onConnectionChange(_ cb: @escaping (Bool) -> Void) { connectionCb = cb }
+    /// While the session is up, it replays `true` at once, in any state.
+    public func onConnectionChange(_ cb: @escaping (Bool) -> Void) {
+        connectionCb = cb
+        if sessionUp { cb(true) }
+    }
     public var reportsConnection: Bool { true }
     public var supportsMute: Bool { true }
 
